@@ -15,10 +15,13 @@ from a2c_ppo_acktr import algo, utils
 from a2c_ppo_acktr.algo import gail
 from a2c_ppo_acktr.arguments import get_args
 from a2c_ppo_acktr.envs import make_vec_envs
-from a2c_ppo_acktr.model import Policy
+from a2c_ppo_acktr.model import Policy, ForwardModel, InverseModel
 from a2c_ppo_acktr.storage import RolloutStorage
+from a2c_ppo_acktr.visualize import visdom_plot
 from evaluation import evaluate
+from tensorboardX import SummaryWriter
 
+from a2c_ppo_acktr.arguments import get_args
 
 def main():
     args = get_args()
@@ -37,6 +40,7 @@ def main():
 
     torch.set_num_threads(1)
     device = torch.device("cuda:0" if args.cuda else "cpu")
+    tbwriter = SummaryWriter(log_dir=args.save_dir)
 
     envs = make_vec_envs(args.env_name, args.seed, args.num_processes,
                          args.gamma, args.log_dir, device, False)
@@ -46,6 +50,23 @@ def main():
         envs.action_space,
         base_kwargs={'recurrent': args.recurrent_policy})
     actor_critic.to(device)
+
+
+    if args.vis:
+        from visdom import Visdom
+        viz = Visdom(port=args.port)
+        win = None
+        
+    if args.use_curiosity:
+        # Works only for discrete actions currently
+        print("Using Curiosity")
+        fwd_model = ForwardModel(envs.action_space.n, state_size=512, hidden_size=256)
+        inv_model = InverseModel(envs.action_space.n, state_size=512, hidden_size=256)
+        fwd_model.to(device)
+        inv_model.to(device)
+    else:
+        fwd_model = None
+        inv_model = None
 
     if args.algo == 'a2c':
         agent = algo.A2C_ACKTR(
@@ -66,7 +87,11 @@ def main():
             args.entropy_coef,
             lr=args.lr,
             eps=args.eps,
-            max_grad_norm=args.max_grad_norm)
+            max_grad_norm=args.max_grad_norm,
+            use_curiosity=args.use_curiosity,
+            fwd_model=fwd_model, inv_model=inv_model,
+            curiosity_beta=args.curiosity_beta,
+            curiosity_lambda=args.curiosity_lambda)
     elif args.algo == 'acktr':
         agent = algo.A2C_ACKTR(
             actor_critic, args.value_loss_coef, args.entropy_coef, acktr=True)
@@ -113,9 +138,13 @@ def main():
         for step in range(args.num_steps):
             # Sample actions
             with torch.no_grad():
-                value, action, action_log_prob, recurrent_hidden_states = actor_critic.act(
-                    rollouts.obs[step], rollouts.recurrent_hidden_states[step],
-                    rollouts.masks[step])
+                # value, action, action_log_prob, recurrent_hidden_states = actor_critic.act(
+                #     rollouts.obs[step], rollouts.recurrent_hidden_states[step],
+                #     rollouts.masks[step])
+                value, action, action_log_prob, recurrent_hidden_states, actor_features = actor_critic.act_curiosity(
+                        rollouts.obs[step],
+                        rollouts.recurrent_hidden_states[step],
+                        rollouts.masks[step])
 
             # Obser reward and next obs
             obs, reward, done, infos = envs.step(action)
@@ -130,6 +159,19 @@ def main():
             bad_masks = torch.FloatTensor(
                 [[0.0] if 'bad_transition' in info.keys() else [1.0]
                  for info in infos])
+            
+            reward = reward.to(device)
+            if args.use_curiosity:
+                with torch.no_grad():
+                    next_actor_features = actor_critic.get_features(obs, recurrent_hidden_states, masks).detach()
+                # Augment reward with curiosity rewards
+                action_onehot = torch.zeros(args.num_processes, envs.action_space.n, device=device)
+                action_onehot.scatter_(1, action.view(-1, 1).long(), 1)
+                with torch.no_grad():
+                    pred_actor_features = fwd_model(actor_features, action_onehot).detach()
+                    curiosity_rewards = 0.5*torch.mean(F.mse_loss(pred_actor_features, next_actor_features, reduce=False), dim=1).view(-1, 1)
+                reward = reward + args.curiosity_eta * curiosity_rewards
+            
             rollouts.insert(obs, recurrent_hidden_states, action,
                             action_log_prob, value, reward, masks, bad_masks)
 
@@ -157,7 +199,7 @@ def main():
         rollouts.compute_returns(next_value, args.use_gae, args.gamma,
                                  args.gae_lambda, args.use_proper_time_limits)
 
-        value_loss, action_loss, dist_entropy = agent.update(rollouts)
+        value_loss, action_loss, dist_entropy, fwd_loss, inv_loss = agent.update(rollouts, device)
 
         rollouts.after_update()
 
@@ -175,6 +217,9 @@ def main():
                 getattr(utils.get_vec_normalize(envs), 'ob_rms', None)
             ], os.path.join(save_path, args.env_name + ".pt"))
 
+
+        total_num_steps = (j + 1) * args.num_processes * args.num_steps
+
         if j % args.log_interval == 0 and len(episode_rewards) > 1:
             total_num_steps = (j + 1) * args.num_processes * args.num_steps
             end = time.time()
@@ -187,11 +232,30 @@ def main():
                         np.max(episode_rewards), dist_entropy, value_loss,
                         action_loss))
 
+            tbwriter.add_scalar('mean reward', np.mean(episode_rewards), total_num_steps)
+            tbwriter.add_scalar('median reward', np.median(episode_rewards), total_num_steps)
+            tbwriter.add_scalar('dist_entropy', dist_entropy, total_num_steps)
+            tbwriter.add_scalar('value_loss', value_loss, total_num_steps)
+            tbwriter.add_scalar('action_loss', action_loss, total_num_steps)
+
+            if args.use_curiosity:
+                print("fwd loss: {:.5f}, inv loss: {:.5f}".format(fwd_loss, inv_loss))
+                tbwriter.add_scalar('fwd_loss', fwd_loss, total_num_steps)
+                tbwriter.add_scalar('inv_loss', inv_loss, total_num_steps)
+
         if (args.eval_interval is not None and len(episode_rewards) > 1
                 and j % args.eval_interval == 0):
             ob_rms = utils.get_vec_normalize(envs).ob_rms
             evaluate(actor_critic, ob_rms, args.env_name, args.seed,
                      args.num_processes, eval_log_dir, device)
+
+        if args.vis and j % args.vis_interval == 0:
+            try:
+                # Sometimes monitor doesn't properly flush the outputs
+                win = visdom_plot(viz, win, args.log_dir, args.env_name,
+                                  args.algo, args.num_frames)
+            except IOError:
+                pass
 
 
 if __name__ == "__main__":

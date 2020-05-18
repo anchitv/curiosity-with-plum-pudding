@@ -2,9 +2,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import pdb
 
 from a2c_ppo_acktr.distributions import Bernoulli, Categorical, DiagGaussian
-from a2c_ppo_acktr.utils import init
+from a2c_ppo_acktr.utils import init, init_normc_
 
 
 class Flatten(nn.Module):
@@ -28,6 +29,7 @@ class Policy(nn.Module):
         self.base = base(obs_shape[0], **base_kwargs)
 
         if action_space.__class__.__name__ == "Discrete":
+            self.n_actions = action_space.n
             num_outputs = action_space.n
             self.dist = Categorical(self.base.output_size, num_outputs)
         elif action_space.__class__.__name__ == "Box":
@@ -65,6 +67,24 @@ class Policy(nn.Module):
 
         return value, action, action_log_probs, rnn_hxs
 
+    def act_curiosity(self, inputs, rnn_hxs, masks, deterministic=False):
+        value, actor_features, rnn_hxs = self.base(inputs, rnn_hxs, masks)
+        dist = self.dist(actor_features)
+
+        if deterministic:
+            action = dist.mode()
+        else:
+            action = dist.sample()
+
+        action_log_probs = dist.log_probs(action)
+        dist_entropy = dist.entropy().mean()
+
+        return value, action, action_log_probs, rnn_hxs, actor_features
+
+    def get_features(self, inputs, rnn_hxs, masks):
+        _, actor_features, _ = self.base(inputs, rnn_hxs, masks)
+        return actor_features
+        
     def get_value(self, inputs, rnn_hxs, masks):
         value, _, _ = self.base(inputs, rnn_hxs, masks)
         return value
@@ -77,6 +97,15 @@ class Policy(nn.Module):
         dist_entropy = dist.entropy().mean()
 
         return value, action_log_probs, dist_entropy, rnn_hxs
+
+    def evaluate_actions_curiosity(self, inputs, rnn_hxs, masks, action):
+        value, actor_features, rnn_hxs = self.base(inputs, rnn_hxs, masks)
+        dist = self.dist(actor_features)
+
+        action_log_probs = dist.log_probs(action)
+        dist_entropy = dist.entropy().mean()
+
+        return value, action_log_probs, dist_entropy, rnn_hxs, actor_features
 
 
 class NNBase(nn.Module):
@@ -227,3 +256,110 @@ class MLPBase(NNBase):
         hidden_actor = self.actor(x)
 
         return self.critic_linear(hidden_critic), hidden_actor, rnn_hxs
+
+
+class ForwardModel(nn.Module):
+    """
+    Given s_{t} encoding and a_{t}, it predicts s_{t+1} encoding
+    """
+    def __init__(self, n_actions, state_size=512, hidden_size=512):
+        super(ForwardModel, self).__init__()
+
+        init_ = lambda m: init(m,
+            init_normc_,
+            lambda x: nn.init.constant_(x, 0))
+
+        self.pre_rb = nn.Sequential(
+                        init_(nn.Linear(state_size + n_actions, hidden_size)),
+                        nn.LeakyReLU(0.2, inplace=True),
+                    )
+        self.post_rb = init_(nn.Linear(hidden_size, state_size))
+
+        class ResidualBlock(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc1 = nn.Sequential(
+                                init_(nn.Linear(hidden_size + n_actions, hidden_size)),
+                                nn.LeakyReLU(0.2, inplace=True),
+                           )
+                self.fc2 = nn.Sequential(
+                                init_(nn.Linear(hidden_size + n_actions, hidden_size))
+                           )
+            def forward(self, feat, act):
+                x = feat
+                x = self.fc1(torch.cat([x, act], dim=1))
+                x = self.fc2(torch.cat([x, act], dim=1))
+                return feat + x
+
+        self.rb1 = ResidualBlock()
+        self.rb2 = ResidualBlock()
+        self.rb3 = ResidualBlock()
+        self.rb4 = ResidualBlock()
+
+    def forward(self, s, a):
+        # s - batch_size x state_size
+        # a - batch_size x n_actions (one-hot encoding)
+        x = self.pre_rb(torch.cat([s, a], dim=1))
+        x = self.rb1(x, a); x = self.rb2(x, a); x = self.rb3(x, a); x = self.rb4(x, a)
+        sp = self.post_rb(x)
+        return sp
+
+class InverseModel(nn.Module):
+    """
+    Given s_{t}, s_{t+1} encoding, it predicts a_{t}
+    """
+    def __init__(self, n_actions, state_size=512, hidden_size=256):
+        super(InverseModel, self).__init__()
+
+        init_ = lambda m: init(m,
+            init_normc_,
+            lambda x: nn.init.constant_(x, 0))
+
+        self.main = nn.Sequential(
+                        init_(nn.Linear(2*state_size, hidden_size)),
+                        nn.ReLU(inplace=True),
+                        init_(nn.Linear(hidden_size, n_actions))
+                    )
+
+    def forward(self, s, sp):
+        # s, sp - batch_size x state_size
+        return self.main(torch.cat([s, sp], dim=1))
+
+
+class ICM(nn.Module):
+    """
+    Intrinsic Curiosity Model
+    """
+    def __init__(self, n_actions):
+        super(ICM, self).__init__()
+
+        self.conv = nn.Conv2d(
+            in_channels=4,
+            out_channels=32,
+            kernel_size=3,
+            stride=2,
+            padding=1)
+
+        self.forward_model = nn.Sequential(
+                        nn.Linear(512 + n_actions, 512),
+                        nn.LeakyReLU(0.2, inplace=True),
+                        nn.Linear(512 + n_actions, 512)
+                    )
+        # self.fc2 = nn.Sequential(
+        #                 init_(nn.Linear(hidden_size + n_actions, hidden_size))
+        #             )
+
+        self.inverse_model = nn.Sequential(
+            nn.Linear(512 * 2, 512),
+            nn.ReLU(),
+            nn.Linear(512, n_actions)
+        )
+
+    def forward(self, state, next_state, **kwargs):
+
+        # inverse model
+        self.inverse_model(torch.cat([state, next_state], dim=1))
+
+        # forward model
+        return super().forward(*input, **kwargs)
+

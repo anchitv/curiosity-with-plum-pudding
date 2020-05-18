@@ -123,8 +123,8 @@ def get_args():
         help='environment to train on (default: PongNoFrameskip-v4)')
     parser.add_argument(
         '--log-dir',
-        default='/tmp/gym/',
-        help='directory to save agent logs (default: /tmp/gym)')
+        default='./logs',
+        help='directory to save agent logs (default: ./logs)')
     parser.add_argument(
         '--save-dir',
         default='./trained_models/',
@@ -149,6 +149,33 @@ def get_args():
         action='store_true',
         default=False,
         help='use a linear schedule on the learning rate')
+    
+    ##############################################################################
+    ######################## Curiosity specific hyperparams ######################
+    ##############################################################################
+    parser.add_argument('--num_frames', type=int, default=10e6,
+                        help='number of frames to train (default: 10e6)')
+    parser.add_argument('--vis-interval', type=int, default=100,
+                        help='vis interval, one log per n updates (default: 100)')
+    parser.add_argument('--vis', action='store_true', default=True,
+                        help='disables visdom visualization')
+    parser.add_argument('--port', type=int, default=8097,
+                        help='port to run the server on (default: 8097)')
+    parser.add_argument('--use_curiosity', type=bool, default=False)
+    parser.add_argument('--curiosity_beta', type=float, default=0.2)
+    parser.add_argument('--curiosity_lambda', type=float, default=0.1)
+    parser.add_argument('--curiosity_eta', type=float, default=0.01)
+    parser.add_argument('--norm_adv', type=bool, default=False, 
+                        help='normalize the advantage values?')
+    parser.add_argument('--norm_rew', type=bool, default=False, 
+                        help='normalize the reward values?')
+
+    
+    ##############################################################################
+    ###################### Plum Pudding specific hyperparams ####################
+    ##############################################################################
+    parser.add_argument('--use-plum', type=bool, default=True,
+                        help='use plum pudding simplifications')
     args = parser.parse_args()
 
     args.cuda = not args.no_cuda and torch.cuda.is_available()

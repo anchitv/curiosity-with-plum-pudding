@@ -1,6 +1,6 @@
 import torch
 from torch.utils.data.sampler import BatchSampler, SubsetRandomSampler
-
+from a2c_ppo_acktr.utils import RunningMeanStd
 
 def _flatten_helper(T, N, _tensor):
     return _tensor.view(T * N, *_tensor.size()[2:])
@@ -8,7 +8,7 @@ def _flatten_helper(T, N, _tensor):
 
 class RolloutStorage(object):
     def __init__(self, num_steps, num_processes, obs_shape, action_space,
-                 recurrent_hidden_state_size):
+                 recurrent_hidden_state_size, norm_rew=False):
         self.obs = torch.zeros(num_steps + 1, num_processes, *obs_shape)
         self.recurrent_hidden_states = torch.zeros(
             num_steps + 1, num_processes, recurrent_hidden_state_size)
@@ -18,12 +18,19 @@ class RolloutStorage(object):
         self.action_log_probs = torch.zeros(num_steps, num_processes, 1)
         if action_space.__class__.__name__ == 'Discrete':
             action_shape = 1
+            self.n_actions = action_space.n
         else:
             action_shape = action_space.shape[0]
+            self.n_actions = None
         self.actions = torch.zeros(num_steps, num_processes, action_shape)
         if action_space.__class__.__name__ == 'Discrete':
             self.actions = self.actions.long()
         self.masks = torch.ones(num_steps + 1, num_processes, 1)
+
+        self.norm_rew = norm_rew
+
+        if self.norm_rew:
+            self.ret_running_mean_std = RunningMeanStd()
 
         # Masks that indicate whether it's a true terminal state
         # or time limit end state
@@ -69,6 +76,20 @@ class RolloutStorage(object):
                         gamma,
                         gae_lambda,
                         use_proper_time_limits=True):
+        
+        if self.norm_rew:
+            # NOTE: Not adding the estimated value after last time step here
+            r_gamma_sum = torch.zeros(self.returns.size()).to(self.returns.device)
+            for step in reversed(range(self.rewards.size(0))):
+                r_gamma_sum[step] = r_gamma_sum[step + 1] * \
+                    gamma * self.masks[step + 1] + self.rewards[step]
+            r_gamma_sum_flat = r_gamma_sum.view(-1)
+            ret_mean = torch.mean(r_gamma_sum_flat).detach()
+            ret_std = torch.std(r_gamma_sum_flat).detach()
+            ret_count= r_gamma_sum_flat.shape[0]
+            self.ret_running_mean_std.update_from_moments(ret_mean, ret_std ** 2, ret_count)
+            self.rewards /= torch.sqrt(self.ret_running_mean_std.var)
+
         if use_proper_time_limits:
             if use_gae:
                 self.value_preds[-1] = next_value
@@ -140,7 +161,7 @@ class RolloutStorage(object):
                 adv_targ = advantages.view(-1, 1)[indices]
 
             yield obs_batch, recurrent_hidden_states_batch, actions_batch, \
-                value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, adv_targ
+                value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, adv_targ, None, None
 
     def recurrent_generator(self, advantages, num_mini_batch):
         num_processes = self.rewards.size(1)
@@ -199,4 +220,4 @@ class RolloutStorage(object):
             adv_targ = _flatten_helper(T, N, adv_targ)
 
             yield obs_batch, recurrent_hidden_states_batch, actions_batch, \
-                value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, adv_targ
+                value_preds_batch, return_batch, masks_batch, old_action_log_probs_batch, adv_targ, T, N
