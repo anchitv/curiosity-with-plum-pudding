@@ -325,41 +325,27 @@ class InverseModel(nn.Module):
         # s, sp - batch_size x state_size
         return self.main(torch.cat([s, sp], dim=1))
 
-
-class ICM(nn.Module):
+class InverseModelPlum(nn.Module):
     """
-    Intrinsic Curiosity Model
+    Given s_{t} encoding, it predicts a_{t}
     """
-    def __init__(self, n_actions):
-        super(ICM, self).__init__()
+    def __init__(self, n_actions, state_size=512, hidden_size=256):
+        super(InverseModel, self).__init__()
 
-        self.conv = nn.Conv2d(
-            in_channels=4,
-            out_channels=32,
-            kernel_size=3,
-            stride=2,
-            padding=1)
+        init_ = lambda m: init(m,
+            init_normc_,
+            lambda x: nn.init.constant_(x, 0))
 
-        self.forward_model = nn.Sequential(
-                        nn.Linear(512 + n_actions, 512),
-                        nn.LeakyReLU(0.2, inplace=True),
-                        nn.Linear(512 + n_actions, 512)
+        self.main = nn.Sequential(
+                        init_(nn.Linear(state_size, hidden_size)),
+                        nn.ReLU(inplace=True),
+                        init_(nn.Linear(hidden_size, n_actions))
                     )
-        # self.fc2 = nn.Sequential(
-        #                 init_(nn.Linear(hidden_size + n_actions, hidden_size))
-        #             )
 
-        self.inverse_model = nn.Sequential(
-            nn.Linear(512 * 2, 512),
-            nn.ReLU(),
-            nn.Linear(512, n_actions)
-        )
-
-    def forward(self, state, next_state, **kwargs):
-
-        # inverse model
-        self.inverse_model(torch.cat([state, next_state], dim=1))
-
-        # forward model
-        return super().forward(*input, **kwargs)
+    def forward(self, s, mode='half'):
+        # s, sp - batch_size x state_size
+        if mode=='half':
+            return self.main(s)
+        else:
+            return s
 

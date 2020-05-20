@@ -174,7 +174,7 @@ def get_args():
     ##############################################################################
     ###################### Plum Pudding specific hyperparams ####################
     ##############################################################################
-    parser.add_argument('--use-plum', type=bool, default=False,
+    parser.add_argument('--use-plum-pudding', type=bool, default=False,
                         help='use plum pudding simplifications')
     args = parser.parse_args()
 
