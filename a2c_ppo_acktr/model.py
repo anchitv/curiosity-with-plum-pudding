@@ -330,7 +330,7 @@ class InverseModelPlum(nn.Module):
     Given s_{t} encoding, it predicts a_{t}
     """
     def __init__(self, n_actions, state_size=512, hidden_size=256):
-        super(InverseModel, self).__init__()
+        super(InverseModelPlum, self).__init__()
 
         init_ = lambda m: init(m,
             init_normc_,

@@ -23,12 +23,12 @@ class PPO():
                  inv_model=None,
                  curiosity_beta=0.2,
                  curiosity_lambda=0.1,
-                 use_plum_pudding=False):
+                 plum_pudding=False):
 
         self.actor_critic = actor_critic
 
         self.use_curiosity = use_curiosity
-        self.use_plum_pudding = use_plum_pudding
+        self.plum_pudding = plum_pudding
         if use_curiosity:
             self.fwd_model = fwd_model
             self.inv_model = inv_model
@@ -125,8 +125,8 @@ class PPO():
                     # fwd_loss = 0.5*F.mse_loss(pred_next_states, next_states.detach())
                     fwd_loss = 0.5 * (pred_next_states - next_states.detach()).pow(2).mean()
                     # Inverse prediction loss
-                    if self.use_plum_pudding:
-                        pred_acts = self.inv_model(curr_states, self.use_plum_pudding)
+                    if self.plum_pudding:
+                        pred_acts = self.inv_model(curr_states, self.plum_pudding)
                         inv_loss = plumGauss(torch.cat([curr_states, pred_acts], dim=1))
                     else:
                         pred_acts = self.inv_model(curr_states, next_states)

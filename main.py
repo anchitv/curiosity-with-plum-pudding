@@ -57,7 +57,7 @@ def main():
         viz = Visdom(port=args.port)
         win = None
         
-    if args.use_plum_pudding:
+    if args.plum_pudding:
         print("Using Plum pudding")
         fwd_model = ForwardModel(envs.action_space.n, state_size=512, hidden_size=256)
         inv_model = InverseModelPlum(envs.action_space.n, state_size=512, hidden_size=256)
@@ -98,7 +98,7 @@ def main():
             fwd_model=fwd_model, inv_model=inv_model,
             curiosity_beta=args.curiosity_beta,
             curiosity_lambda=args.curiosity_lambda,
-            use_plum_pudding=args.use_plum_pudding)
+            plum_pudding=args.plum_pudding)
     elif args.algo == 'acktr':
         agent = algo.A2C_ACKTR(
             actor_critic, args.value_loss_coef, args.entropy_coef, acktr=True)

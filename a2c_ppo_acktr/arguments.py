@@ -172,10 +172,13 @@ def get_args():
 
     
     ##############################################################################
-    ###################### Plum Pudding specific hyperparams ####################
+    ######################## Plum Pudding specific params ########################
     ##############################################################################
-    parser.add_argument('--use-plum-pudding', type=bool, default=False,
-                        help='use plum pudding simplifications')
+    parser.add_argument(
+        '--plum-pudding',
+        default=None,
+        help='use plum pudding simplifications')
+    
     args = parser.parse_args()
 
     args.cuda = not args.no_cuda and torch.cuda.is_available()
