@@ -51,6 +51,7 @@ def main():
         base_kwargs={'recurrent': args.recurrent_policy})
     actor_critic.to(device)
 
+    print(args)
 
     if args.vis:
         from visdom import Visdom
