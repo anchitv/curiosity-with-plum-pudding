@@ -125,9 +125,11 @@ class PPO():
                     # fwd_loss = 0.5*F.mse_loss(pred_next_states, next_states.detach())
                     fwd_loss = 0.5 * (pred_next_states - next_states.detach()).pow(2).mean()
                     # Inverse prediction loss
-                    if self.plum_pudding:
+                    if self.plum_pudding=="half":
                         pred_acts = self.inv_model(curr_states, self.plum_pudding)
                         inv_loss = plumGauss(torch.cat([curr_states, pred_acts], dim=1))
+                    elif self.plum_pudding=="full":
+                        inv_loss = plumGauss(curr_states)
                     else:
                         pred_acts = self.inv_model(curr_states, next_states)
                         inv_loss = F.cross_entropy(pred_acts, acts.long())
