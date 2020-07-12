@@ -5,6 +5,7 @@ import sys
 
 import numpy as np
 import torch
+import time
 
 from a2c_ppo_acktr.envs import VecPyTorch, make_vec_envs
 from a2c_ppo_acktr.utils import get_render_func, get_vec_normalize
@@ -36,13 +37,15 @@ args = parser.parse_args()
 
 args.det = not args.non_det
 
+device = torch.device("cuda:0" if args.cuda else "cpu")
+
 env = make_vec_envs(
     args.env_name,
     args.seed + 1000,
     1,
     None,
     None,
-    device='cpu',
+    device=device,
     allow_early_resets=False)
 
 # Get a render function
@@ -93,3 +96,5 @@ while True:
 
     if render_func is not None:
         render_func('human')
+
+    time.sleep(0.04)

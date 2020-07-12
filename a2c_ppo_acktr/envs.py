@@ -165,7 +165,9 @@ class VecPyTorch(VecEnvWrapper):
 
     def reset(self):
         obs = self.venv.reset()
-        obs = torch.from_numpy(obs).float().to(self.device)
+        # obs = torch.from_numpy(obs).float().to(self.device)
+        obs = torch.as_tensor(np.array(obs).astype('float')).to(self.device)
+        # obs = torch.from_numpy(np.asarray(obs)).float().to(self.device)
         return obs
 
     def step_async(self, actions):
@@ -177,7 +179,8 @@ class VecPyTorch(VecEnvWrapper):
 
     def step_wait(self):
         obs, reward, done, info = self.venv.step_wait()
-        obs = torch.from_numpy(obs).float().to(self.device)
+        obs = torch.as_tensor(np.array(obs).astype('float')).to(self.device)
+        # obs = torch.from_numpy(obs).float().to(self.device)
         reward = torch.from_numpy(reward).unsqueeze(dim=1).float()
         return obs, reward, done, info
 
